@@ -88,38 +88,62 @@ return out}
 async function setTorch(t,on){try{if(!t.getCapabilities().torch)return false;await t.applyConstraints({advanced:[{torch:on}]});return true}catch(e){return false}}
 var report=null;
 var VS='attribute vec2 p;varying vec2 uv;void main(){uv=p*0.5+0.5;gl_Position=vec4(p,0.,1.);}';
-var FS='precision highp float;varying vec2 uv;uniform sampler2D tex;uniform vec2 texel,mixRG;uniform float radius,gain,mode;const float TAU=6.2831853;'+
+// Pass A: optical density of chosen channels, smoothed (3x3 tent blur), packed into 2 channels for ~16-bit precision
+var FA='precision highp float;varying vec2 uv;uniform sampler2D tex;uniform vec2 texel,mixRG;'+
 'float od(vec3 c){c=max(c,vec3(0.004));return mixRG.x*-log(c.r)+mixRG.y*-log(c.g);}'+
+'void main(){float s=0.;for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){float w=(2.-abs(float(x)))*(2.-abs(float(y)));'+
+'s+=w*od(texture2D(tex,uv+vec2(float(x),float(y))*texel*1.5).rgb);}'+
+'float v=clamp(s/16.*0.5,0.,0.999);float hi=floor(v*255.)/255.;gl_FragColor=vec4(hi,v*255.-floor(v*255.),0.,1.);}';
+// Pass B: Hessian ridge filter on smoothed density, line-vs-blob suppression, skin mask, display
+var FB='precision highp float;varying vec2 uv;uniform sampler2D tex,A;uniform vec2 tA;uniform float sc,gain,mode;'+
+'float I(vec2 o){vec4 t=texture2D(A,uv+o*tA);return (t.r+t.g/255.)*2.;}'+
 'void main(){vec3 rgb=texture2D(tex,uv).rgb;if(mode>1.5){gl_FragColor=vec4(rgb,1.);return;}'+
-'float ce=od(rgb);float sum=ce;for(int i=0;i<8;i++){float a=float(i)*TAU/8.0;vec2 d=vec2(cos(a),sin(a))*texel;'+
-'sum+=od(texture2D(tex,uv+d*radius).rgb);sum+=od(texture2D(tex,uv+d*radius*0.5).rgb);}'+
-'float diff=(ce-sum/17.0)*gain;float v=smoothstep(0.02,0.02+0.25/gain,diff);'+
-'vec3 blue=vec3(0.12,0.45,1.0);vec3 col;'+
-'if(mode<0.5)col=mix(rgb,blue,v*0.85);else if(mode<1.0)col=mix(vec3(0.),blue,v);else col=vec3(clamp(0.67-diff*0.9,0.,1.));'+
+'float c=I(vec2(0.)),r=I(vec2(sc,0.)),l=I(vec2(-sc,0.)),u=I(vec2(0.,sc)),d=I(vec2(0.,-sc));'+
+'float hxx=r+l-2.*c,hyy=u+d-2.*c;'+
+'float hxy=(I(vec2(sc,sc))-I(vec2(sc,-sc))-I(vec2(-sc,sc))+I(vec2(-sc,-sc)))*0.25;'+
+'float tr=(hxx+hyy)*0.5,sq=sqrt(pow((hxx-hyy)*0.5,2.)+hxy*hxy);float lmin=tr-sq,lmax=tr+sq;'+
+'float ridge=max(-lmin,0.)*exp(-2.*pow(lmax/(lmin-1e-5),2.));'+
+'float skin=smoothstep(0.,0.04,rgb.r-rgb.g)*smoothstep(-0.02,0.03,rgb.g-rgb.b);'+
+'float v=smoothstep(0.03,0.15,ridge*gain)*mix(0.2,1.,skin);'+
+'vec3 blue=vec3(0.12,0.45,1.0);float lum=dot(rgb,vec3(0.3,0.59,0.11));vec3 col;'+
+'if(mode<0.5)col=mix(rgb,blue,v*0.9);else if(mode<1.0)col=mix(vec3(0.),blue,v);else col=vec3(pow(lum,0.8)*0.85*(1.-v*0.9));'+
 'gl_FragColor=vec4(col,1.);}';
-var gl=null,U={},glw=0;
+var gl=null,PA,PB,UA={},UB={},fbo,tA,aw=0,ah=0;
 function mkS(t,src){var s=gl.createShader(t);gl.shaderSource(s,src);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(s));return s}
+function mkP(fs,names,U){var p=gl.createProgram();gl.attachShader(p,mkS(gl.VERTEX_SHADER,VS));gl.attachShader(p,mkS(gl.FRAGMENT_SHADER,fs));gl.linkProgram(p);
+if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(p));names.forEach(function(n){U[n]=gl.getUniformLocation(p,n)});return p}
+function setTex(t,f){gl.bindTexture(gl.TEXTURE_2D,t);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,f);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,f)}
+var vtex;
 function initGL(){if(gl)return true;
 try{gl=out.getContext('webgl',{antialias:false,alpha:false});if(!gl)throw new Error('WebGL not supported');
-var pr=gl.createProgram();gl.attachShader(pr,mkS(gl.VERTEX_SHADER,VS));gl.attachShader(pr,mkS(gl.FRAGMENT_SHADER,FS));gl.linkProgram(pr);
-if(!gl.getProgramParameter(pr,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(pr));gl.useProgram(pr);
+PA=mkP(FA,['tex','texel','mixRG'],UA);PB=mkP(FB,['tex','A','tA','sc','gain','mode'],UB);
 gl.bindBuffer(gl.ARRAY_BUFFER,gl.createBuffer());gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
-var l=gl.getAttribLocation(pr,'p');gl.enableVertexAttribArray(l);gl.vertexAttribPointer(l,2,gl.FLOAT,false,0,0);
-gl.bindTexture(gl.TEXTURE_2D,gl.createTexture());gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
-gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
-gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
-['texel','mixRG','radius','gain','mode'].forEach(function(n){U[n]=gl.getUniformLocation(pr,n)});return true}
+gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+gl.bindAttribLocation(PA,0,'p');gl.bindAttribLocation(PB,0,'p');gl.linkProgram(PA);gl.linkProgram(PB);
+['texel','mixRG','tex'].forEach(function(n){UA[n]=gl.getUniformLocation(PA,n)});['tex','A','tA','sc','gain','mode'].forEach(function(n){UB[n]=gl.getUniformLocation(PB,n)});
+vtex=gl.createTexture();gl.activeTexture(gl.TEXTURE0);setTex(vtex,gl.LINEAR);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
+tA=gl.createTexture();gl.activeTexture(gl.TEXTURE1);setTex(tA,gl.NEAREST);fbo=gl.createFramebuffer();return true}
 catch(e){gl=null;$('#msg').textContent='Graphics error: '+e.message;return false}}
+function sizeA(w,h){aw=Math.max(2,w>>1);ah=Math.max(2,h>>1);gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,tA);
+gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,aw,ah,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tA,0);gl.bindFramebuffer(gl.FRAMEBUFFER,null)}
 function frame(){if(!run)return;
 if(vid.videoWidth){var w=vid.videoWidth,h=vid.videoHeight;
-if(out.width!==w||out.height!==h){out.width=w;out.height=h;gl.viewport(0,0,w,h)}
+if(out.width!==w||out.height!==h){out.width=w;out.height=h;sizeA(w,h)}
+gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,vtex);
 if(!frozen)gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,vid);
-var c=$('#chan').value,v=$('#view').value;
-gl.uniform2f(U.texel,1/w,1/h);
-gl.uniform2f(U.mixRG,c==='r'?1:c==='g'?0:0.5,c==='r'?0:c==='g'?1:0.5);
-gl.uniform1f(U.radius,+$('#det').value*(w/400)/2);
-gl.uniform1f(U.gain,+$('#gain').value*0.8);
-gl.uniform1f(U.mode,v==='ov'?0:v==='bb'?0.5:v==='en'?1:2);
+var c=$('#chan').value,v=$('#view').value,mode=v==='ov'?0:v==='bb'?0.5:v==='en'?1:2;
+// Pass A: smoothed optical density -> half-res buffer
+gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);gl.viewport(0,0,aw,ah);gl.useProgram(PA);
+gl.uniform1i(UA.tex,0);gl.uniform2f(UA.texel,1/w,1/h);
+gl.uniform2f(UA.mixRG,c==='r'?1:c==='g'?0:0.5,c==='r'?0:c==='g'?1:0.5);
+gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+// Pass B: ridge filter + display
+gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,w,h);gl.useProgram(PB);
+gl.uniform1i(UB.tex,0);gl.uniform1i(UB.A,1);gl.uniform2f(UB.tA,1/aw,1/ah);
+gl.uniform1f(UB.sc,Math.max(1,Math.round(+$('#det').value*0.18*(aw/320))));
+gl.uniform1f(UB.gain,+$('#gain').value);gl.uniform1f(UB.mode,mode);
 gl.drawArrays(gl.TRIANGLE_STRIP,0,4)}
 if(vid.requestVideoFrameCallback)vid.requestVideoFrameCallback(frame);else requestAnimationFrame(frame)}
 function stop(){run=false;if(vid.srcObject)vid.srcObject.getTracks().forEach(function(t){t.stop()});
