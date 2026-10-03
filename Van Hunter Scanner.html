@@ -68,6 +68,28 @@ var vid=document.createElement('video');vid.setAttribute('playsinline','');vid.m
 var gray=new Float32Array(N),sm=new Float32Array(N),bg=new Float32Array(N),acc=new Float32Array(N),II=new Float64Array((W+1)*(H+1));
 var run=false,frozen=false,track=null,torch=false;
 
+async function applyVeinConstraints(track,opts){opts=opts||{};var out={applied:[],skipped:[]};
+if(!track||typeof track.getCapabilities!=='function'){out.skipped.push('advanced camera controls unsupported');return out}
+var caps=track.getCapabilities();
+function has(k){return caps[k]!==undefined}
+function lerp(r,t){return r.min+(r.max-r.min)*t}
+function clamp(v,r){return Math.min(r.max,Math.max(r.min,v))}
+async function ap(n,c){try{await track.applyConstraints({advanced:[c]});out.applied.push(n)}catch(e){out.skipped.push(n+' ('+(e.name||'error')+')')}}
+if(opts.torch!==false&&caps.torch){await ap('torch',{torch:true});torch=true}else out.skipped.push('torch not supported');
+var modes=caps.exposureMode||[];
+if(modes.indexOf('manual')>-1){await ap('exposure manual',{exposureMode:'manual'});
+if(has('exposureTime'))await ap('exposure time',{exposureTime:lerp(caps.exposureTime,0.25)});
+if(has('iso'))await ap('iso',{iso:lerp(caps.iso,0.2)})}
+else{if(modes.indexOf('single-shot')>-1)await ap('exposure locked',{exposureMode:'single-shot'});
+if(has('exposureCompensation'))await ap('exposure comp',{exposureCompensation:lerp(caps.exposureCompensation,0.3)})}
+if(!modes.length&&!has('exposureCompensation'))out.skipped.push('exposure controls not supported');
+var fm=caps.focusMode||[];
+if(fm.indexOf('manual')>-1&&has('focusDistance'))await ap('focus manual',{focusMode:'manual',focusDistance:clamp(opts.focusMeters||0.2,caps.focusDistance)});
+else if(fm.indexOf('continuous')>-1)await ap('focus continuous',{focusMode:'continuous'});
+else out.skipped.push('focus controls not supported');
+return out}
+async function setTorch(t,on){try{if(!t.getCapabilities().torch)return false;await t.applyConstraints({advanced:[{torch:on}]});return true}catch(e){return false}}
+var report=null;
 function box(g,r,o){var S=W+1,x,y;
 for(y=0;y<H;y++){var row=0;for(x=0;x<W;x++){row+=g[y*W+x];II[(y+1)*S+x+1]=II[y*S+x+1]+row}}
 for(y=0;y<H;y++){var y0=Math.max(0,y-r),y1=Math.min(H,y+r+1);
@@ -104,7 +126,7 @@ async function start(){
 try{
 var s=await navigator.mediaDevices.getUserMedia({audio:false,video:vc()});
 vid.srcObject=s;track=s.getVideoTracks()[0];await vid.play();
-try{await track.applyConstraints({advanced:[{focusMode:'continuous'}]})}catch(e){}
+report=await applyVeinConstraints(track);
 out.style.transform=$('#cam').value==='user'?'scaleX(-1)':'none';
 run=true;frozen=false;acc.fill(0);
 $('#go').textContent='Stop camera';$('#frz').hidden=false;$('#frz').textContent='Freeze';$('#tch').hidden=false;
@@ -114,16 +136,14 @@ $('#msg').textContent='';info();zoomUI();lenses();frame()
 function info(){
 var st=track.getSettings?track.getSettings():{},cp=track.getCapabilities?track.getCapabilities():{};
 $('#info').textContent='Label: '+(track.label||'unknown')+'\nSize: '+st.width+'x'+st.height+'\nFacing: '+(st.facingMode||'n/a')+
-'\nTorch control: '+(cp.torch?'yes':'no')+'\nExposure control: '+(cp.exposureMode||cp.exposureTime?'yes':'no')}
+'\nTorch control: '+(cp.torch?'yes':'no')+'\nExposure control: '+(cp.exposureMode||cp.exposureTime?'yes':'no')+(report?'\nApplied: '+(report.applied.join(', ')||'none')+'\nSkipped: '+(report.skipped.join(', ')||'none'):'')}
 
 $('#go').onclick=function(){run?stop():start()};
 $('#cam').onchange=function(){$('#dev').value='';if(run){stop();start()}};
 $('#dev').onchange=function(){if(run){stop();start()}};
 $('#zm').oninput=function(){try{track.applyConstraints({advanced:[{zoom:+this.value}]})}catch(e){}};
 $('#frz').onclick=function(){frozen=!frozen;$('#frz').textContent=frozen?'Resume':'Freeze'};
-$('#tch').onclick=async function(){
-try{var c=track.getCapabilities?track.getCapabilities():{};if(!c.torch)throw 0;torch=!torch;await track.applyConstraints({advanced:[{torch:torch}]})}
-catch(e){$('#msg').textContent='This browser cannot control the flashlight. Use an external light.'}};
+$('#tch').onclick=async function(){var ok=await setTorch(track,!torch);if(ok){torch=!torch;$('#msg').textContent=''}else $('#msg').textContent='This browser cannot control the flashlight. Use an external light.'};
 window.addEventListener('error',function(e){$('#msg').textContent='Error: '+e.message});
 })();
 </script>
