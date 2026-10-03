@@ -37,6 +37,9 @@ pre{white-space:pre-wrap;font-size:.78rem;color:var(--mute);margin:0}
 </div>
 <label for="cam">Camera</label>
 <select id="cam"><option value="environment">Rear camera</option><option value="user">Front camera</option></select>
+<label for="dev">Lens (pick Ultra Wide to zoom out)</label>
+<select id="dev"><option value="">Auto</option></select>
+<div id="zw" hidden><label for="zm">Zoom</label><input type="range" id="zm" step="0.1"></div>
 <label for="view">View</label>
 <select id="view"><option value="ov">Blue overlay</option><option value="en">Enhanced grayscale (veins dark)</option><option value="raw">Raw camera</option></select>
 <label for="chan">Channel</label>
@@ -92,15 +95,20 @@ requestAnimationFrame(frame)}
 function stop(){run=false;if(vid.srcObject)vid.srcObject.getTracks().forEach(function(t){t.stop()});
 vid.srcObject=null;track=null;torch=false;$('#go').textContent='Start camera';$('#frz').hidden=$('#tch').hidden=true}
 
+function vc(){var id=$('#dev').value,v={width:{ideal:1280},height:{ideal:960}};
+if(id)v.deviceId={exact:id};else v.facingMode={ideal:$('#cam').value};return v}
+async function lenses(){try{var l=(await navigator.mediaDevices.enumerateDevices()).filter(function(d){return d.kind==='videoinput'}),sel=$('#dev'),cur=track&&track.getSettings().deviceId;
+sel.innerHTML='<option value="">Auto</option>'+l.map(function(d,i){return '<option value="'+d.deviceId+'">'+(d.label||'Camera '+(i+1))+'</option>'}).join('');if(cur)sel.value=cur}catch(e){}}
+function zoomUI(){var c=track.getCapabilities?track.getCapabilities():{},z=c.zoom;$('#zw').hidden=!z;if(z){var m=$('#zm');m.min=z.min;m.max=z.max;m.step=z.step||0.1;m.value=track.getSettings().zoom||z.min}}
 async function start(){
 try{
-var s=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:$('#cam').value},width:{ideal:1280},height:{ideal:960}}});
+var s=await navigator.mediaDevices.getUserMedia({audio:false,video:vc()});
 vid.srcObject=s;track=s.getVideoTracks()[0];await vid.play();
 try{await track.applyConstraints({advanced:[{focusMode:'continuous'}]})}catch(e){}
 out.style.transform=$('#cam').value==='user'?'scaleX(-1)':'none';
 run=true;frozen=false;acc.fill(0);
 $('#go').textContent='Stop camera';$('#frz').hidden=false;$('#frz').textContent='Freeze';$('#tch').hidden=false;
-$('#msg').textContent='';info();frame()
+$('#msg').textContent='';info();zoomUI();lenses();frame()
 }catch(e){$('#msg').textContent='Camera blocked ('+(e&&e.name||'error')+'). Open this page in Safari and allow the camera.'}}
 
 function info(){
@@ -109,7 +117,9 @@ $('#info').textContent='Label: '+(track.label||'unknown')+'\nSize: '+st.width+'x
 '\nTorch control: '+(cp.torch?'yes':'no')+'\nExposure control: '+(cp.exposureMode||cp.exposureTime?'yes':'no')}
 
 $('#go').onclick=function(){run?stop():start()};
-$('#cam').onchange=function(){if(run){stop();start()}};
+$('#cam').onchange=function(){$('#dev').value='';if(run){stop();start()}};
+$('#dev').onchange=function(){if(run){stop();start()}};
+$('#zm').oninput=function(){try{track.applyConstraints({advanced:[{zoom:+this.value}]})}catch(e){}};
 $('#frz').onclick=function(){frozen=!frozen;$('#frz').textContent=frozen?'Resume':'Freeze'};
 $('#tch').onclick=async function(){
 try{var c=track.getCapabilities?track.getCapabilities():{};if(!c.torch)throw 0;torch=!torch;await track.applyConstraints({advanced:[{torch:torch}]})}
