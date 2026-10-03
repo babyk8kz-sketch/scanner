@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Van Hunter Scanner</title>
+<style>
+:root{--bg:#0b1220;--card:#141d33;--ink:#e8edf7;--mute:#9aa8c4;--acc:#6ea2f0;--line:#2a3958;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,sans-serif;line-height:1.45}
+main{max-width:640px;margin:0 auto;padding:14px 14px 40px}
+h1{font-size:1.6rem;margin:6px 0 2px;letter-spacing:-.02em}
+.sub{color:var(--mute);margin:0 0 12px;font-size:.9rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}
+canvas{width:100%;border-radius:10px;background:#000;display:block}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+button{flex:1;padding:12px;border:0;border-radius:10px;background:var(--acc);color:#0b1220;font-weight:700;font-size:1rem;cursor:pointer;touch-action:manipulation}
+button.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
+label{display:block;color:var(--mute);font-size:.85rem;margin-top:8px}
+select,input[type=range]{width:100%;padding:10px;margin-top:4px;border-radius:10px;background:var(--bg);color:var(--ink);border:1px solid var(--line);font-size:1rem}
+pre{white-space:pre-wrap;font-size:.78rem;color:var(--mute);margin:0}
+.warn{font-size:.85rem;color:var(--mute)}
+</style>
+</head>
+<body>
+<main>
+<h1>Van Hunter Scanner</h1>
+<p class="sub">Camera vein viewer for studying your own arm.</p>
+
+<div class="card">
+<canvas id="out" width="400" height="300"></canvas>
+<div class="row">
+<button type="button" id="go">Start camera</button>
+<button type="button" id="frz" class="alt" hidden>Freeze</button>
+<button type="button" id="tch" class="alt" hidden>Light</button>
+</div>
+<label for="cam">Camera</label>
+<select id="cam"><option value="environment">Rear camera</option><option value="user">Front camera</option></select>
+<label for="view">View</label>
+<select id="view"><option value="ov">Blue overlay</option><option value="en">Enhanced grayscale (veins dark)</option><option value="raw">Raw camera</option></select>
+<label for="chan">Channel</label>
+<select id="chan"><option value="g">Green (visible light)</option><option value="r">Red</option><option value="l">Brightness (best for infrared)</option></select>
+<label for="gain">Sensitivity</label><input type="range" id="gain" min="2" max="30" value="10">
+<label for="det">Vein width</label><input type="range" id="det" min="5" max="30" value="14">
+<p id="msg" class="warn"></p>
+</div>
+
+<div class="card">
+<b>Infrared test</b>
+<p class="warn">Point a TV remote at the lens and press a button. If you see a purple or white glow on screen, that camera picks up near infrared. Try both cameras. iPhone front cameras often show it, rear cameras usually do not.</p>
+<p class="warn">Web pages cannot use Face ID's infrared sensor or LiDAR. For real infrared, add an 850 nm infrared LED light and an 850 nm pass filter over a camera that passed the test, and select Brightness above.</p>
+</div>
+
+<div class="card"><b>Camera info</b><pre id="info">Start the camera to see details.</pre></div>
+</main>
+<script>
+(function(){
+"use strict";
+var $=function(s){return document.querySelector(s)};
+var out=$('#out'),cx=out.getContext('2d'),W=400,H=300,N=W*H;
+var src=document.createElement('canvas');src.width=W;src.height=H;
+var sx=src.getContext('2d',{willReadFrequently:true});
+var vid=document.createElement('video');vid.setAttribute('playsinline','');vid.muted=true;
+var gray=new Float32Array(N),sm=new Float32Array(N),bg=new Float32Array(N),acc=new Float32Array(N),II=new Float64Array((W+1)*(H+1));
+var run=false,frozen=false,track=null,torch=false;
+
+function box(g,r,o){var S=W+1,x,y;
+for(y=0;y<H;y++){var row=0;for(x=0;x<W;x++){row+=g[y*W+x];II[(y+1)*S+x+1]=II[y*S+x+1]+row}}
+for(y=0;y<H;y++){var y0=Math.max(0,y-r),y1=Math.min(H,y+r+1);
+for(x=0;x<W;x++){var x0=Math.max(0,x-r),x1=Math.min(W,x+r+1);
+o[y*W+x]=(II[y1*S+x1]-II[y0*S+x1]-II[y1*S+x0]+II[y0*S+x0])/((x1-x0)*(y1-y0))}}}
+
+function frame(){
+if(!run)return;
+if(!frozen&&vid.videoWidth){
+var vw=vid.videoWidth,vh=vid.videoHeight,cw=Math.min(vw,vh*4/3),ch=cw*3/4;
+sx.drawImage(vid,(vw-cw)/2,(vh-ch)/2,cw,ch,0,0,W,H);
+var d=sx.getImageData(0,0,W,H),p=d.data,v=$('#view').value;
+if(v!=='raw'){
+var m=$('#chan').value,k=+$('#gain').value,r=+$('#det').value,i;
+for(i=0;i<N;i++){var R=p[i*4],G=p[i*4+1],B=p[i*4+2];gray[i]=m==='g'?G:m==='r'?R:(R+G+B)/3}
+box(gray,1,sm);box(gray,r,bg);
+for(i=0;i<N;i++){
+acc[i]=acc[i]*.65+(bg[i]-sm[i])*.35;var s=acc[i]*k;
+if(v==='ov'){var a=Math.max(0,Math.min(1,(s-6)/30))*.85;
+p[i*4]=p[i*4]*(1-a)+30*a;p[i*4+1]=p[i*4+1]*(1-a)+110*a;p[i*4+2]=p[i*4+2]*(1-a)+255*a}
+else{var o=Math.max(0,Math.min(255,170-s*2.2));p[i*4]=p[i*4+1]=p[i*4+2]=o}}}
+cx.putImageData(d,0,0)}
+requestAnimationFrame(frame)}
+
+function stop(){run=false;if(vid.srcObject)vid.srcObject.getTracks().forEach(function(t){t.stop()});
+vid.srcObject=null;track=null;torch=false;$('#go').textContent='Start camera';$('#frz').hidden=$('#tch').hidden=true}
+
+async function start(){
+try{
+var s=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:$('#cam').value},width:{ideal:1280},height:{ideal:960}}});
+vid.srcObject=s;track=s.getVideoTracks()[0];await vid.play();
+try{await track.applyConstraints({advanced:[{focusMode:'continuous'}]})}catch(e){}
+out.style.transform=$('#cam').value==='user'?'scaleX(-1)':'none';
+run=true;frozen=false;acc.fill(0);
+$('#go').textContent='Stop camera';$('#frz').hidden=false;$('#frz').textContent='Freeze';$('#tch').hidden=false;
+$('#msg').textContent='';info();frame()
+}catch(e){$('#msg').textContent='Camera blocked ('+(e&&e.name||'error')+'). Open this page in Safari and allow the camera.'}}
+
+function info(){
+var st=track.getSettings?track.getSettings():{},cp=track.getCapabilities?track.getCapabilities():{};
+$('#info').textContent='Label: '+(track.label||'unknown')+'\nSize: '+st.width+'x'+st.height+'\nFacing: '+(st.facingMode||'n/a')+
+'\nTorch control: '+(cp.torch?'yes':'no')+'\nExposure control: '+(cp.exposureMode||cp.exposureTime?'yes':'no')}
+
+$('#go').onclick=function(){run?stop():start()};
+$('#cam').onchange=function(){if(run){stop();start()}};
+$('#frz').onclick=function(){frozen=!frozen;$('#frz').textContent=frozen?'Resume':'Freeze'};
+$('#tch').onclick=async function(){
+try{var c=track.getCapabilities?track.getCapabilities():{};if(!c.torch)throw 0;torch=!torch;await track.applyConstraints({advanced:[{torch:torch}]})}
+catch(e){$('#msg').textContent='This browser cannot control the flashlight. Use an external light.'}};
+window.addEventListener('error',function(e){$('#msg').textContent='Error: '+e.message});
+})();
+</script>
+</body>
+</html>
