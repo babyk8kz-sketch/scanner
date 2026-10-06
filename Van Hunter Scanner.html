@@ -45,7 +45,7 @@ pre{white-space:pre-wrap;font-size:.78rem;color:var(--mute);margin:0}
 <label for="chan">Channel</label>
 <select id="chan"><option value="g">Green (visible light)</option><option value="r">Red</option><option value="l">Brightness (best for infrared)</option></select>
 <label for="gain">Sensitivity</label><input type="range" id="gain" min="2" max="30" value="10">
-<label for="det">Vein width</label><input type="range" id="det" min="5" max="30" value="14">
+<label for="det">Vein width (2 to 12 px)</label><input type="range" id="det" min="5" max="30" value="14">
 <p id="msg" class="warn"></p>
 </div>
 
@@ -102,7 +102,9 @@ var FB='precision highp float;varying vec2 uv;uniform sampler2D tex,A;uniform ve
 'float hxx=r+l-2.*c,hyy=u+d-2.*c;'+
 'float hxy=(I(vec2(sc,sc))-I(vec2(sc,-sc))-I(vec2(-sc,sc))+I(vec2(-sc,-sc)))*0.25;'+
 'float tr=(hxx+hyy)*0.5,sq=sqrt(pow((hxx-hyy)*0.5,2.)+hxy*hxy);float lmin=tr-sq,lmax=tr+sq;'+
-'float ridge=max(-lmin-0.004,0.)*exp(-2.*pow(lmax/(lmin-1e-5),2.));'+
+'vec2 dir=abs(hxy)>1e-6?normalize(vec2(hxy,lmin-hxx)):(hxx<hyy?vec2(1.,0.):vec2(0.,1.));'+
+'float sym=min(c-I(dir*sc*1.6),c-I(-dir*sc*1.6));'+
+'float ridge=max(min(-lmin,2.*sym)-0.004,0.)*exp(-2.*pow(lmax/(lmin-1e-5),2.));'+
 'float skin=smoothstep(0.,0.04,rgb.r-rgb.g)*smoothstep(-0.02,0.03,rgb.g-rgb.b);'+
 'float v=smoothstep(0.05,0.3,ridge*gain)*mix(0.3,1.,skin);'+
 'vec3 blue=vec3(0.12,0.45,1.0);float lum=dot(rgb,vec3(0.3,0.59,0.11));vec3 col;'+
@@ -133,7 +135,7 @@ if(vid.videoWidth){var w=vid.videoWidth,h=vid.videoHeight;
 if(out.width!==w||out.height!==h){out.width=w;out.height=h;sizeA(w,h)}
 gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,vtex);
 if(!frozen)gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,vid);
-var sc=Math.max(1,Math.round(+$('#det').value*0.18*((w>>1)/320)));var c=$('#chan').value,v=$('#view').value,mode=v==='ov'?0:v==='bb'?0.5:v==='en'?1:2;
+var wpx=2+(+$('#det').value-5)*0.4,sc=Math.min(6,Math.max(1,Math.round(wpx*(w/1280)/2)));var c=$('#chan').value,v=$('#view').value,mode=v==='ov'?0:v==='bb'?0.5:v==='en'?1:2;
 // Pass A: smoothed optical density -> half-res buffer
 gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);gl.viewport(0,0,aw,ah);gl.useProgram(PA);
 gl.uniform1i(UA.tex,0);gl.uniform2f(UA.texel,1/w,1/h);gl.uniform1f(UA.bs,Math.max(1.2,0.55*sc));
