@@ -78,7 +78,7 @@ if(modes.indexOf('manual')>-1){await ap('exposure manual',{exposureMode:'manual'
 if(has('exposureTime'))await ap('exposure time',{exposureTime:lerp(caps.exposureTime,0.25)});
 if(has('iso'))await ap('iso',{iso:lerp(caps.iso,0.2)})}
 else{if(modes.indexOf('single-shot')>-1)await ap('exposure locked',{exposureMode:'single-shot'});
-if(has('exposureCompensation'))await ap('exposure comp',{exposureCompensation:lerp(caps.exposureCompensation,0.3)})}
+if(has('exposureCompensation'))await ap('exposure comp',{exposureCompensation:lerp(caps.exposureCompensation,0.5)})}
 if(!modes.length&&!has('exposureCompensation'))out.skipped.push('exposure controls not supported');
 var fm=caps.focusMode||[];
 if(fm.indexOf('manual')>-1&&has('focusDistance'))await ap('focus manual',{focusMode:'manual',focusDistance:clamp(opts.focusMeters||0.2,caps.focusDistance)});
@@ -89,11 +89,11 @@ async function setTorch(t,on){try{if(!t.getCapabilities().torch)return false;awa
 var report=null;
 var VS='attribute vec2 p;varying vec2 uv;void main(){uv=p*0.5+0.5;gl_Position=vec4(p,0.,1.);}';
 // Pass A: optical density of chosen channels, smoothed (3x3 tent blur), packed into 2 channels for ~16-bit precision
-var FA='precision highp float;varying vec2 uv;uniform sampler2D tex;uniform vec2 texel,mixRG;'+
+var FA='precision highp float;varying vec2 uv;uniform sampler2D tex;uniform vec2 texel,mixRG;uniform float bs;'+
 'float od(vec3 c){c=max(c,vec3(0.004));return mixRG.x*-log(c.r)+mixRG.y*-log(c.g);}'+
-'void main(){float s=0.;for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++){float w=(2.-abs(float(x)))*(2.-abs(float(y)));'+
-'s+=w*od(texture2D(tex,uv+vec2(float(x),float(y))*texel*1.5).rgb);}'+
-'float v=clamp(s/16.*0.5,0.,0.999);float hi=floor(v*255.)/255.;gl_FragColor=vec4(hi,v*255.-floor(v*255.),0.,1.);}';
+'void main(){float s=0.,wt=0.;for(int y=-2;y<=2;y++)for(int x=-2;x<=2;x++){float w=(3.-abs(float(x)))*(3.-abs(float(y)));'+
+'s+=w*od(texture2D(tex,uv+vec2(float(x),float(y))*texel*bs).rgb);wt+=w;}'+
+'float v=clamp(s/wt*0.5,0.,0.999);float hi=floor(v*255.)/255.;gl_FragColor=vec4(hi,v*255.-floor(v*255.),0.,1.);}';
 // Pass B: Hessian ridge filter on smoothed density, line-vs-blob suppression, skin mask, display
 var FB='precision highp float;varying vec2 uv;uniform sampler2D tex,A;uniform vec2 tA;uniform float sc,gain,mode;'+
 'float I(vec2 o){vec4 t=texture2D(A,uv+o*tA);return (t.r+t.g/255.)*2.;}'+
@@ -102,11 +102,11 @@ var FB='precision highp float;varying vec2 uv;uniform sampler2D tex,A;uniform ve
 'float hxx=r+l-2.*c,hyy=u+d-2.*c;'+
 'float hxy=(I(vec2(sc,sc))-I(vec2(sc,-sc))-I(vec2(-sc,sc))+I(vec2(-sc,-sc)))*0.25;'+
 'float tr=(hxx+hyy)*0.5,sq=sqrt(pow((hxx-hyy)*0.5,2.)+hxy*hxy);float lmin=tr-sq,lmax=tr+sq;'+
-'float ridge=max(-lmin,0.)*exp(-2.*pow(lmax/(lmin-1e-5),2.));'+
+'float ridge=max(-lmin-0.004,0.)*exp(-2.*pow(lmax/(lmin-1e-5),2.));'+
 'float skin=smoothstep(0.,0.04,rgb.r-rgb.g)*smoothstep(-0.02,0.03,rgb.g-rgb.b);'+
-'float v=smoothstep(0.03,0.15,ridge*gain)*mix(0.2,1.,skin);'+
+'float v=smoothstep(0.05,0.3,ridge*gain)*mix(0.3,1.,skin);'+
 'vec3 blue=vec3(0.12,0.45,1.0);float lum=dot(rgb,vec3(0.3,0.59,0.11));vec3 col;'+
-'if(mode<0.5)col=mix(rgb,blue,v*0.9);else if(mode<1.0)col=mix(vec3(0.),blue,v);else col=vec3(pow(lum,0.8)*0.85*(1.-v*0.9));'+
+'if(mode<0.5)col=mix(rgb,blue,v*0.9);else if(mode<1.0)col=mix(vec3(0.),blue,v);else col=vec3(pow(lum,0.8)*0.85*(1.-v*0.6));'+
 'gl_FragColor=vec4(col,1.);}';
 var gl=null,PA,PB,UA={},UB={},fbo,tA,aw=0,ah=0;
 function mkS(t,src){var s=gl.createShader(t);gl.shaderSource(s,src);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(s));return s}
@@ -117,11 +117,11 @@ gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,f);gl.texParameteri(gl.TEXT
 var vtex;
 function initGL(){if(gl)return true;
 try{gl=out.getContext('webgl',{antialias:false,alpha:false});if(!gl)throw new Error('WebGL not supported');
-PA=mkP(FA,['tex','texel','mixRG'],UA);PB=mkP(FB,['tex','A','tA','sc','gain','mode'],UB);
+PA=mkP(FA,['tex','texel','mixRG','bs'],UA);PB=mkP(FB,['tex','A','tA','sc','gain','mode'],UB);
 gl.bindBuffer(gl.ARRAY_BUFFER,gl.createBuffer());gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
 gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
 gl.bindAttribLocation(PA,0,'p');gl.bindAttribLocation(PB,0,'p');gl.linkProgram(PA);gl.linkProgram(PB);
-['texel','mixRG','tex'].forEach(function(n){UA[n]=gl.getUniformLocation(PA,n)});['tex','A','tA','sc','gain','mode'].forEach(function(n){UB[n]=gl.getUniformLocation(PB,n)});
+['texel','mixRG','tex','bs'].forEach(function(n){UA[n]=gl.getUniformLocation(PA,n)});['tex','A','tA','sc','gain','mode'].forEach(function(n){UB[n]=gl.getUniformLocation(PB,n)});
 vtex=gl.createTexture();gl.activeTexture(gl.TEXTURE0);setTex(vtex,gl.LINEAR);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
 tA=gl.createTexture();gl.activeTexture(gl.TEXTURE1);setTex(tA,gl.NEAREST);fbo=gl.createFramebuffer();return true}
 catch(e){gl=null;$('#msg').textContent='Graphics error: '+e.message;return false}}
@@ -133,17 +133,17 @@ if(vid.videoWidth){var w=vid.videoWidth,h=vid.videoHeight;
 if(out.width!==w||out.height!==h){out.width=w;out.height=h;sizeA(w,h)}
 gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,vtex);
 if(!frozen)gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,vid);
-var c=$('#chan').value,v=$('#view').value,mode=v==='ov'?0:v==='bb'?0.5:v==='en'?1:2;
+var sc=Math.max(1,Math.round(+$('#det').value*0.18*((w>>1)/320)));var c=$('#chan').value,v=$('#view').value,mode=v==='ov'?0:v==='bb'?0.5:v==='en'?1:2;
 // Pass A: smoothed optical density -> half-res buffer
 gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);gl.viewport(0,0,aw,ah);gl.useProgram(PA);
-gl.uniform1i(UA.tex,0);gl.uniform2f(UA.texel,1/w,1/h);
+gl.uniform1i(UA.tex,0);gl.uniform2f(UA.texel,1/w,1/h);gl.uniform1f(UA.bs,Math.max(1.2,0.55*sc));
 gl.uniform2f(UA.mixRG,c==='r'?1:c==='g'?0:0.5,c==='r'?0:c==='g'?1:0.5);
 gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
 // Pass B: ridge filter + display
 gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,w,h);gl.useProgram(PB);
 gl.uniform1i(UB.tex,0);gl.uniform1i(UB.A,1);gl.uniform2f(UB.tA,1/aw,1/ah);
-gl.uniform1f(UB.sc,Math.max(1,Math.round(+$('#det').value*0.18*(aw/320))));
-gl.uniform1f(UB.gain,+$('#gain').value);gl.uniform1f(UB.mode,mode);
+gl.uniform1f(UB.sc,sc);
+gl.uniform1f(UB.gain,+$('#gain').value*0.4);gl.uniform1f(UB.mode,mode);
 gl.drawArrays(gl.TRIANGLE_STRIP,0,4)}
 if(vid.requestVideoFrameCallback)vid.requestVideoFrameCallback(frame);else requestAnimationFrame(frame)}
 function stop(){run=false;if(vid.srcObject)vid.srcObject.getTracks().forEach(function(t){t.stop()});
